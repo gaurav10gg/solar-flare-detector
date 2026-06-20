@@ -567,6 +567,7 @@ function MetricsScreen({ metrics }) {
   }
   const lt = metrics.lead_time || {};
   const ev = metrics.event_level || {};
+  const op = metrics.operating_point || {};
   const imp = metrics.feature_importances || {};
   const impMax = Math.max(...Object.values(imp), 0.0001);
   return (
@@ -574,11 +575,18 @@ function MetricsScreen({ metrics }) {
       {metrics.data_warning && <div className="warn-banner">⚠ {metrics.data_warning}</div>}
       <div className="panel-title" style={{ marginBottom: 10 }}>Per-sample skill (per-second)</div>
       <div className="metric-cards">
-        <div className="mcard headline"><div className="ml">TSS · headline</div><div className="mv">{metrics.TSS >= 0 ? "+" : ""}{metrics.TSS}</div><div className="mh">True Skill Statistic</div></div>
+        <div className="mcard headline"><div className="ml">TSS · operating</div><div className="mv">{metrics.TSS >= 0 ? "+" : ""}{metrics.TSS}</div><div className="mh">at deploy threshold{metrics.peak_tss != null ? ` · peak ${metrics.peak_tss}` : ""}</div></div>
         <div className="mcard"><div className="ml">HSS</div><div className="mv">{metrics.HSS}</div><div className="mh">Heidke Skill Score</div></div>
-        <div className="mcard"><div className="ml">ROC-AUC</div><div className="mv">{metrics.ROC?.auc ?? "—"}</div><div className="mh">discrimination</div></div>
+        <div className="mcard"><div className="ml">ROC-AUC</div><div className="mv">{metrics.ROC?.auc ?? "—"}</div><div className="mh">discrimination (threshold-free)</div></div>
         <div className="mcard"><div className="ml">Median Lead</div><div className="mv">{lt.median ?? "—"}<span style={{ fontSize: 14 }}> min</span></div><div className="mh">{lt.in_target_15_30_pct ?? 0}% in 15–30 min</div></div>
         <div className="mcard"><div className="ml">Alerts</div><div className="mv">{lt.n_alerts ?? 0}</div><div className="mh">{lt.n_matched ?? 0} matched · {lt.n_false ?? 0} false</div></div>
+      </div>
+      <div className="panel-title" style={{ margin: "18px 0 10px" }}>Operating point — precision-targeted (deployable, not max-TSS)</div>
+      <div className="metric-cards">
+        <div className="mcard headline"><div className="ml">Precision</div><div className="mv">{op.precision != null ? (op.precision * 100).toFixed(0) + "%" : "—"}</div><div className="mh">of positive predictions are real</div></div>
+        <div className="mcard"><div className="ml">Recall</div><div className="mv">{op.recall != null ? (op.recall * 100).toFixed(0) + "%" : "—"}</div><div className="mh">of positive samples caught</div></div>
+        <div className="mcard"><div className="ml">False alarms</div><div className="mv">{op.far_per_day ?? "—"}<span style={{ fontSize: 14 }}>/day</span></div><div className="mh">per-sample FP rate</div></div>
+        <div className="mcard"><div className="ml">Threshold</div><div className="mv">{op.threshold ?? metrics.threshold}</div><div className="mh">target ≥{op.target_precision != null ? (op.target_precision * 100).toFixed(0) + "%" : "—"} precision{op.target_met === false ? " (not reached)" : ""}</div></div>
       </div>
       {metrics.evaluation_note && (
         <p className="muted" style={{ fontFamily: "var(--mono)", fontSize: 11, margin: "4px 0 18px", lineHeight: 1.6 }}>
@@ -620,6 +628,7 @@ function MetricsScreen({ metrics }) {
               <div className="kv"><span className="k">False Negatives</span><span style={{ color: "#ff5c5c" }}>{metrics.confusion.FN}</span></div>
               <div className="kv"><span className="k">True Negatives</span><span>{metrics.confusion.TN}</span></div>
               <div className="kv"><span className="k">Operating threshold</span><span>{metrics.threshold}</span></div>
+              {metrics.peak_tss != null && <div className="kv"><span className="k">Peak TSS (max-TSS thr {metrics.tss_threshold})</span><span>{metrics.peak_tss}</span></div>}
               <div className="kv"><span className="k">Test samples</span><span>{metrics.n_test_samples?.toLocaleString()}</span></div>
               <div className="kv"><span className="k">Observation days</span><span>{metrics.n_days}</span></div>
             </div>

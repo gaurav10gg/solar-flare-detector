@@ -47,9 +47,12 @@ _MAD_TO_SIGMA = 1.4826  # MAD -> Gaussian-equivalent sigma
 # flux.  It is a documented, TUNABLE module constant: the physically correct
 # value is obtained by regressing the observed SoLEXS rise rate (deriv_soft)
 # against hxr_broad across confirmed flares (least-squares slope through the
-# origin).  Default 1.0 leaves the relation in raw count-rate units; only the
-# residual's zero-crossing structure (not its absolute scale) is used downstream.
-K_NEUPERT = 1.0  # (cts/s of SXR-rate) per (ct/s of HXR-flux)
+# origin).  The default below was fitted empirically by `multiday_eval.py` on
+# ~1.7M active samples across 23 observation days (LS-through-origin); it puts
+# `predicted_sxr_rise` on the same count-rate scale as `deriv_soft` so the
+# residual's zero-crossing genuinely flags HXR/SXR divergence rather than being
+# dominated by the raw unit mismatch.
+K_NEUPERT = 1.13e-3  # (cts/s of SXR-rate) per (ct/s of HXR-flux); fit on 23 days
 
 
 # --------------------------------------------------------------------------- #

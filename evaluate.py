@@ -94,6 +94,51 @@ def optimal_threshold(y_true, y_prob) -> dict:
     return {"threshold": round(best_thr, 4), "tss": round(best_tss, 4)}
 
 
+def threshold_for_precision(y_true, y_prob, target_precision: float = 0.6) -> dict:
+    """Lowest probability threshold whose precision >= *target_precision*.
+
+    The max-TSS threshold maximises balanced skill but, for a rare event, can
+    sit at a very low probability where the alarm rate is operationally absurd
+    (thousands of false positives per day). The deployable operating point is
+    instead the **least conservative threshold that still meets a precision
+    target** — this keeps recall as high as possible while bounding the false
+    alarm rate. Among all thresholds meeting the target we pick the one with the
+    highest recall; if the target is unreachable we fall back to the
+    maximum-precision threshold (and report the precision actually achieved).
+
+    The threshold is chosen on training/validation probabilities and then
+    applied to held-out data, exactly like :func:`optimal_threshold`.
+
+    Returns ``{'threshold', 'precision', 'recall', 'target_precision',
+    'target_met'}``.
+    """
+    yt = np.asarray(y_true).astype(int)
+    yp = np.asarray(y_prob, dtype="float64")
+    if len(np.unique(yt)) < 2:
+        return {"threshold": 0.5, "precision": 0.0, "recall": 0.0,
+                "target_precision": target_precision, "target_met": False}
+    order = np.argsort(-yp)
+    yt_s = yt[order]
+    yp_s = yp[order]
+    tp = np.cumsum(yt_s)
+    fp = np.cumsum(1 - yt_s)
+    total_pos = int(yt.sum())
+    precision = tp / np.maximum(tp + fp, 1)
+    recall = tp / max(total_pos, 1)
+    meets = precision >= target_precision
+    if meets.any():
+        idx = np.where(meets)[0]
+        best = idx[int(np.argmax(recall[idx]))]  # highest recall among precise enough
+        met = True
+    else:
+        best = int(np.argmax(precision))         # closest we can get
+        met = False
+    return {"threshold": round(float(yp_s[best]), 4),
+            "precision": round(float(precision[best]), 4),
+            "recall": round(float(recall[best]), 4),
+            "target_precision": target_precision, "target_met": bool(met)}
+
+
 def hss(y_true=None, y_pred=None, *, cm: dict = None) -> float:
     """Heidke Skill Score (vs random). Range (-inf, 1]; 0 = no skill."""
     cm = cm or confusion(y_true, y_pred)

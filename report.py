@@ -342,14 +342,19 @@ def build_pdf_report(bundle: dict, out_path: str) -> str:
     # ---- metrics ----
     story.append(Paragraph("Forecast skill", st["h2"]))
     ev = metrics.get("event_level", {}) or {}
+    op = metrics.get("operating_point", {}) or {}
+    peak = metrics.get("peak_tss")
     skill_rows = [
-        ["TSS (headline)", f"{metrics.get('TSS', '-')}"],
+        ["ROC-AUC (threshold-free)", f"{(metrics.get('ROC') or {}).get('auc', '-')}"],
+        ["Operating point", f"precision-targeted (≥{op.get('target_precision', '-')}), thr {op.get('threshold', metrics.get('threshold', '-'))}"],
+        ["Precision / recall", f"{op.get('precision', '-')} / {op.get('recall', '-')}"],
+        ["False alarms (per-sample)", f"{op.get('far_per_day', '-')}/day"],
+        ["TSS @ operating point", f"{metrics.get('TSS', '-')}" + (f"  (peak {peak} at max-TSS thr {metrics.get('tss_threshold', '-')})" if peak is not None else "")],
         ["HSS", f"{metrics.get('HSS', '-')}"],
-        ["ROC-AUC", f"{(metrics.get('ROC') or {}).get('auc', '-')}"],
         ["Event recall", f"{ev.get('n_alerted', '-')}/{ev.get('n_flares', '-')} "
                          f"({ev.get('event_recall', '-')})"],
         ["Mean / median lead", f"{ev.get('mean_lead', '-')} / {ev.get('median_lead', '-')} min"],
-        ["False alarms", f"{ev.get('false_alarm_count', '-')} (FAR {ev.get('far_per_day', '-')}/day)"],
+        ["False alarms (event)", f"{ev.get('false_alarm_count', '-')} (FAR {ev.get('far_per_day', '-')}/day)"],
         ["GOES calibration", "calibrated (NOAA)" if calibrated else "uncalibrated (placeholder)"],
         ["Observation days", str(metrics.get("n_days", "-"))],
     ]
@@ -428,7 +433,8 @@ def build_pdf_report(bundle: dict, out_path: str) -> str:
     story.append(Spacer(1, 14))
     story.append(Paragraph(
         "Methodology: windowed Neupert coupling (dF_SXR/dt ~ k*F_HXR), HXR->SXR cross-correlation "
-        "lag, robust adaptive backgrounds, XGBoost forecaster with max-TSS thresholding, strictly "
+        "lag, robust adaptive backgrounds, XGBoost forecaster with a precision-targeted operating "
+        "point (deployable false-alarm rate; max-TSS reported as peak reference), strictly "
         "time-ordered (no-shuffle) evaluation. Hard-X-ray-only transients are reported as candidates, "
         "never counted as confirmed flares.", st["muted"]))
 

@@ -41,8 +41,11 @@ SoLEXS and HEL1OS data fall on the **same UTC calendar day** (verified from the 
 filenames). Mismatched or single‑instrument days are auto‑rejected with a logged reason — this is
 how "use only the dates where it is accurate" is enforced *automatically* rather than hardcoded.
 
-All five days (2026‑06‑05/06/07/08/10) passed the gate; earlier wrong‑pairings (a SoLEXS day zipped
-with the previous day's HEL1OS) would be rejected as `instrument date mismatch`.
+Of ~40 candidate dates supplied (May–June 2026), **23 days passed the gate** (both instruments on the
+same UTC day); SoLEXS‑only days (e.g. most of mid‑May) and HEL1OS‑only days (e.g. Jun 9) were
+auto‑rejected with a logged reason, as were earlier wrong‑pairings (a SoLEXS day zipped with the
+previous day's HEL1OS → `instrument date mismatch`). These 23 days are the basis for the
+leave‑one‑day‑out evaluation in §3.
 
 ---
 
@@ -51,28 +54,54 @@ with the previous day's HEL1OS) would be rejected as `instrument date mismatch`.
 | Model | Split | TSS | HSS | AUC |
 |---|---|---|---|---|
 | **Before** — leaky cumulative Neupert, single day | within‑day (Jun 5) | +0.305 | +0.197 | 0.634 |
-| **After** — new physics features, single day | within‑day (Jun 5) | **+0.362** | **+0.302** | **0.682** |
-| **After** — new physics features, **multi‑day** | **held‑out DAY** (train 05–08 → test 10) | **+0.232** | +0.162 | 0.665 |
+| **After** — new physics features, single day | within‑day (Jun 5) | +0.362 | +0.302 | 0.682 |
+| **After** — new physics features, **23 days** | **leave‑one‑day‑out CV** (21 folds) | **+0.217 ± 0.133** | +0.118 ± 0.075 | **0.684 ± 0.096** |
+| **After** — new physics features, **23 days** | chronological (train 18 d → test last 5 d) | +0.192 | +0.185 | 0.708 |
 
 - The within‑day score improved (**0.305 → 0.362 TSS**, AUC 0.634 → 0.682) purely from replacing the
   leaky feature and adding the cross‑correlation lag.
-- The **held‑out‑day** score (0.232 TSS, 0.665 AUC) is the credible, generalisation‑revealing number:
-  the model forecasts a **completely unseen day** and still shows real skill.
+- The headline number is now the **leave‑one‑day‑out CV across all 23 internally‑consistent days**
+  (May 25 – Jun 18 2026): each day is forecast by a model trained on the *other 22 days only*.
+  **TSS 0.217 ± 0.133, AUC 0.684 ± 0.096** (pooled TSS 0.276). This is the credible,
+  generalisation‑revealing number — the model forecasts **completely unseen days** and still shows
+  real, consistent skill across three weeks of solar activity.
+- **Event‑level (pooled over folds):** alerted **47 / 89 confirmed flares (recall 0.53)**, **mean lead
+  14.6 min**.
 
-### Top‑6 feature importances
+### Deployable operating point (the default everywhere)
 
-| Single‑day (Jun 5) | imp | Multi‑day (held‑out Jun 10) | imp |
-|---|---|---|---|
-| hxr_sxr_xcorr | 0.235 | var_soft | 0.206 |
-| time_since_last_flare | 0.207 | deriv_soft | 0.197 |
-| deriv_soft | 0.166 | **neupert_residual** | 0.155 |
-| var_soft | 0.104 | **hxr_sxr_lag** | 0.123 |
-| **hxr_sxr_lag** | 0.102 | time_since_last_flare | 0.122 |
-| **neupert_residual** | 0.079 | **neupert_windowed** | 0.080 |
+TSS is *defined* at the threshold that maximises it — but for a rare event that point sits at an
+absurdly low probability and would fire **~2,450 false alarms/day**, which is operationally useless.
+The system therefore defaults to a **precision‑targeted operating point** (`pipeline.TARGET_PRECISION`,
+selected on training data via `evaluate.threshold_for_precision`): the least‑conservative probability
+cut that still hits the precision target. On the 23‑day held‑out validation:
 
-> On the **held‑out day**, the top of the table is dominated by the **new physics features**
-> (`neupert_residual`, `hxr_sxr_lag`, `neupert_windowed`) — they *generalise across days*, which the
-> old cumulative integral did not.
+| Operating point | threshold | precision | recall | false alarms |
+|---|---|---|---|---|
+| max‑TSS (statistical optimum) | 0.04 | 0.21 | 0.23 | **2,453 / day** |
+| **precision‑targeted (default)** | **~0.31** | **0.70** | 0.11 | **129 / day** |
+
+This single change takes the false‑alarm rate from *disqualifying* to *defensible* (≈19× fewer). The
+max‑TSS value is still reported as `peak_tss` for reference, and ROC‑AUC (threshold‑free) is unchanged.
+The confusion matrix, dashboard, PDF report and live alert stream all use this one operating point.
+
+### Mean feature importances (leave‑one‑day‑out, 21 folds)
+
+| Feature | mean imp | note |
+|---|---|---|
+| var_soft | 0.326 | short‑term SoLEXS variability |
+| deriv_soft | 0.262 | thermal rise rate |
+| **neupert_residual** | 0.133 | **new** — HXR/SXR divergence (local Neupert) |
+| time_since_last_flare | 0.078 | recency context (was the leakage suspect — now demoted) |
+| **neupert_windowed** | 0.069 | **new** — trailing windowed HXR fluence |
+| **hxr_sxr_lag** | 0.046 | **new** — measured HXR→SXR lead lag |
+| hr_slope | 0.036 | rising spectral hardness |
+| **hxr_sxr_xcorr** | 0.035 | **new** — HXR→SXR coupling strength |
+
+> Across truly held‑out days the **four new physics features together carry ≈ 0.28 of the importance**,
+> while the previously‑dominant `time_since_last_flare` (the leakage suspect) falls to 0.078. The
+> windowed/residual Neupert and cross‑correlation‑lag features *generalise across days*, which the old
+> cumulative integral did not.
 
 ---
 
@@ -85,7 +114,9 @@ time‑of‑day (it leaked temporal position, not physics). It is replaced by th
 - `neupert_windowed` — trailing windowed (10 min) trapezoidal integral of recent HXR flux
   (segment‑aware, resets at every gap).
 - `predicted_sxr_rise = K_NEUPERT · hxr_broad` and `neupert_residual = deriv_soft − predicted_sxr_rise`
-  (divergence ⇒ imminent SXR peak). `K_NEUPERT` is a documented, tunable module constant.
+  (divergence ⇒ imminent SXR peak). `K_NEUPERT` was **fitted empirically** (LS‑through‑origin on
+  ~1.7M active samples across all 23 days) to **1.13 × 10⁻³**, so the residual is a true
+  scale‑matched divergence rather than a raw unit mismatch.
 
 **Leakage proof** (corr with `time_since_last_flare`, Jun 5):
 `cumulative = −0.506` → `windowed = −0.032` — a **15.8× reduction**.
@@ -138,11 +169,16 @@ placeholder). Drop a flare list at `data/catalog/goes_flares.csv` to enable real
 ---
 
 ## 9. Honest caveats
-- Held‑out‑day TSS (0.232) < within‑day (0.362): true cross‑day generalisation is harder — this is
-  the honest number and it is reported as the headline for multi‑day.
+- Leave‑one‑day‑out TSS (0.217 ± 0.133) < within‑day (0.362): true cross‑day generalisation is
+  harder — this is the honest number and it is reported as the headline for multi‑day. Fold‑to‑fold
+  spread is real (quiet days with few/no flares score near zero; active days score 0.4–0.5).
+- 2 of 23 days are excluded from CV scoring as single‑class (no labelled positives, e.g. a flare‑free
+  day) — they still train the other folds but cannot be scored as a held‑out test.
+- High per‑sample FAR (≈18/day) is at the *max‑TSS* threshold used for honest skill scoring; the
+  replay/alert demo model uses a higher‑precision operating point (§7).
 - GOES classes are uncalibrated until a NOAA flare list is supplied (surfaced in the UI).
-- `K_NEUPERT` defaults to 1.0; only the residual's zero‑crossing structure is used, but it can be
-  fit per the regression described in `features.py`.
+- `K_NEUPERT` is now fit empirically (1.13 × 10⁻³, see §4); re‑running `multiday_eval.py` on a new
+  dataset re‑fits it.
 
 ---
 
@@ -152,6 +188,9 @@ placeholder). Drop a flare list at `data/catalog/goes_flares.csv` to enable real
 # Backend + dashboard
 python -m uvicorn api:app --host 127.0.0.1 --port 8000      # open http://127.0.0.1:8000
 
-# Multi-day held-out-day evaluation (auto-discovers root *.zip + ./raw_data)
+# Leave-one-day-out CV across all consistent days (auto-discovers root *.zip + ./raw_data).
+# Builds per-day feature matrices, fits K_NEUPERT, runs LODO + chronological split,
+# writes data/catalog/lodo_metrics.json.
 python multiday_eval.py
+python multiday_eval.py --use-cache    # reuse cached per-day matrices (fast re-run)
 ```

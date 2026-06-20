@@ -1,163 +1,266 @@
 """
-multiday_eval.py — TRUE held-out-DAY forecast evaluation across all dates.
+multiday_eval.py — leave-one-day-out (LODO) cross-validation across all days.
 
-Loads every internally-consistent observation day (the loader's accuracy gate
-auto-rejects mismatched days), builds features **per day** (so no rolling
-statistic ever bleeds across a day boundary), concatenates the per-day feature
-matrices, then:
+The credible, generalisation-revealing evaluation for a multi-day dataset:
 
-  * trains XGBoost on the EARLIER day(s) and reports TSS / HSS / AUC on the
-    held-out LAST day (the credible, generalisation-revealing split);
-  * prints per-day flare counts (confirmed vs HXR candidates);
-  * prints a single-day (within-day) baseline for comparison;
-  * compares the windowed-Neupert and cross-correlation feature importances
-    between the single-day and multi-day models.
+  1. Load every internally-consistent day (loader accuracy gate auto-rejects
+     instrument-date mismatches), build features **per day** (no rolling
+     statistic ever crosses a day boundary), and cache the per-day matrices.
+  2. Empirically fit the Neupert constant ``K_NEUPERT`` (dF_SXR/dt ~= K*F_HXR)
+     on pooled active samples, and recompute ``neupert_residual`` with it.
+  3. **Leave-one-day-out CV**: for each day, train XGBoost on ALL other days,
+     pick the max-TSS threshold on the training data only, and score the
+     held-out day. Report TSS/HSS/AUC as mean +/- std across folds plus a
+     pooled confusion matrix, and aggregate event-level recall / lead / FAR.
+  4. A chronological headline split (earliest ~80% of days train, last ~20%
+     test) for a single, time-honest headline number.
 
-Strictly time-ordered, no shuffling, no-peek forward labels. Nothing is
-hardcoded to a date or flare.
+Strictly time-ordered, no shuffling, no-peek forward labels. Nothing hardcoded
+to a date or flare.
 
 Usage::
 
-    python multiday_eval.py                 # auto: root *.zip + ./raw_data
-    python multiday_eval.py raw_data .       # explicit source roots
+    python multiday_eval.py                  # auto sources: root *.zip + ./raw_data
+    python multiday_eval.py --use-cache       # reuse cached per-day matrices
+    python multiday_eval.py --rebuild raw_data .
 """
 from __future__ import annotations
 
 import glob
 import json
+import os
 import sys
 
 import numpy as np
 import pandas as pd
 
+import features as featmod
 from loader import load_multi_day
 from features import build_features
 from nowcast import detect_soft, detect_hard, merge_catalog, catalog_summary
-from forecast import (make_labels, make_feature_matrix, time_train_test_split,
-                      train_forecaster, predict_proba_curve)
-from evaluate import optimal_threshold, confusion, tss, hss, roc_curve_data
+from forecast import (make_labels, make_feature_matrix, train_forecaster,
+                      predict_proba_curve, extract_alerts)
+from evaluate import (optimal_threshold, confusion, tss, hss, roc_curve_data,
+                      event_level_metrics)
 
 HORIZON_MIN = 30.0
 MIN_CLASS = "C"
-TOP_N = 6
+TOP_N = 8
+CACHE_DIR = "data/processed/perday"
 
 
+# --------------------------------------------------------------------------- #
+# Per-day build + cache
+# --------------------------------------------------------------------------- #
 def build_day(df_day: pd.DataFrame):
-    """Features + catalogue + (X, y) for one day's clean frame."""
     feats = build_features(df_day.drop(columns=["day"], errors="ignore"))
     catalog = merge_catalog(detect_soft(feats), detect_hard(feats))
     labelled = make_labels(feats, catalog, horizon_min=HORIZON_MIN, min_class=MIN_CLASS)
     X, _ = make_feature_matrix(labelled)
-    y = labelled.loc[X.index, "y_binary"]
-    return feats, catalog, X, y
+    y = labelled.loc[X.index, "y_binary"].astype(int)
+    return catalog, X, y
 
 
-def fit_and_score(X: pd.DataFrame, y: pd.Series, split_mode: str, test_frac: float):
-    """Time-ordered split -> train -> max-TSS threshold on train -> score on test."""
-    X_tr, X_te, y_tr, y_te = time_train_test_split(
-        X, y, test_frac=test_frac, split_mode=split_mode)
-    train_days = sorted({str(d.date()) for d in X_tr.index.normalize().unique()})
-    test_days = sorted({str(d.date()) for d in X_te.index.normalize().unique()})
+def _cache_paths(date):
+    return (os.path.join(CACHE_DIR, f"{date}_X.parquet"),
+            os.path.join(CACHE_DIR, f"{date}_cat.parquet"))
 
+
+def load_or_build_days(roots, use_cache):
+    """Return {date: (catalog, X, y)} building (and caching) per-day matrices."""
+    os.makedirs(CACHE_DIR, exist_ok=True)
+    manifest = os.path.join(CACHE_DIR, "manifest.json")
+    if use_cache and os.path.exists(manifest):
+        days = json.load(open(manifest))["days"]
+        out = {}
+        for d in days:
+            xp, cp = _cache_paths(d)
+            X = pd.read_parquet(xp)
+            y = X.pop("__y__").astype(int)
+            cat = pd.read_parquet(cp) if os.path.exists(cp) else pd.DataFrame()
+            out[d] = (cat, X, y)
+        print(f"[cache] loaded {len(out)} per-day matrices from {CACHE_DIR}")
+        return out, {"days_accepted": days, "days_rejected": [], "from_cache": True}
+
+    combined, info = load_multi_day(roots, cadence="1s")
+    out = {}
+    print("\n" + "=" * 72 + "\n  PER-DAY FLARE COUNTS\n" + "=" * 72)
+    for date, g in combined.groupby("day"):
+        cat, X, y = build_day(g)
+        out[date] = (cat, X, y)
+        xp, cp = _cache_paths(date)
+        Xc = X.copy(); Xc["__y__"] = y.to_numpy()
+        Xc.to_parquet(xp)
+        if len(cat):
+            cat.to_parquet(cp)
+        s = catalog_summary(cat)
+        print(f"  {date}: {s['headline']}  | positive samples={int(y.sum())}")
+    json.dump({"days": sorted(out)}, open(os.path.join(CACHE_DIR, "manifest.json"), "w"))
+    return out, info
+
+
+# --------------------------------------------------------------------------- #
+# Neupert constant fit
+# --------------------------------------------------------------------------- #
+def fit_k_neupert(per_day):
+    """Least-squares-through-origin K for dF_SXR/dt ~= K * F_HXR on active samples."""
+    hs, ds = [], []
+    for _, X, _ in per_day.values():
+        if {"hxr_broad", "deriv_soft"} <= set(X.columns):
+            h = X["hxr_broad"].to_numpy(); d = X["deriv_soft"].to_numpy()
+            m = np.isfinite(h) & np.isfinite(d) & (h > 0)
+            hs.append(h[m]); ds.append(d[m])
+    h = np.concatenate(hs); d = np.concatenate(ds)
+    k = float(np.sum(h * d) / np.sum(h * h)) if h.size else 1.0
+    return k, int(h.size)
+
+
+def apply_k(per_day, k):
+    """Recompute neupert_residual = deriv_soft - k*hxr_broad in each day's X."""
+    for _, X, _ in per_day.values():
+        if {"hxr_broad", "deriv_soft", "neupert_residual"} <= set(X.columns):
+            X["neupert_residual"] = X["deriv_soft"] - k * X["hxr_broad"]
+
+
+# --------------------------------------------------------------------------- #
+# Scoring
+# --------------------------------------------------------------------------- #
+def score_fold(X_tr, y_tr, X_te, y_te, catalog_te):
     model = train_forecaster(X_tr, y_tr, mode="binary")
-    prob_tr = predict_proba_curve(model, X_tr)
-    thr = optimal_threshold(y_tr.to_numpy(), prob_tr.to_numpy())["threshold"]
+    thr = optimal_threshold(y_tr.to_numpy(),
+                            predict_proba_curve(model, X_tr).to_numpy())["threshold"]
     prob_te = predict_proba_curve(model, X_te)
     y_pred = (prob_te.to_numpy() >= thr).astype(int)
     cm = confusion(y_te.to_numpy(), y_pred)
     auc = roc_curve_data(y_te.to_numpy(), prob_te.to_numpy())["auc"]
-    imp = dict(sorted(zip(model.feature_names,
-                          [round(float(v), 4) for v in model.feature_importances_]),
-                      key=lambda kv: -kv[1]))
-    return {
-        "TSS": round(tss(cm=cm), 4), "HSS": round(hss(cm=cm), 4),
-        "AUC": round(float(auc), 4) if auc == auc else None,
-        "threshold": thr, "confusion": cm, "importances": imp,
-        "train_days": train_days, "test_days": test_days,
-        "n_train": int(len(X_tr)), "n_test": int(len(X_te)),
-        "pos_test": int(y_te.sum()),
-    }
+    alerts = extract_alerts(prob_te.dropna(), catalog_te, model, X_te,
+                            threshold=thr, horizon_min=HORIZON_MIN,
+                            min_class=MIN_CLASS, refractory_min=20.0, rearm_frac=0.7)
+    ev = event_level_metrics(catalog_te, alerts, horizon_min=HORIZON_MIN,
+                             n_days=1, min_class=MIN_CLASS)
+    imp = {f: float(v) for f, v in zip(model.feature_names, model.feature_importances_)}
+    return {"TSS": tss(cm=cm), "HSS": hss(cm=cm),
+            "AUC": float(auc) if auc == auc else np.nan, "threshold": thr,
+            "cm": cm, "event": ev, "importances": imp,
+            "n_test": int(len(y_te)), "pos_test": int(y_te.sum())}
 
 
 def main():
-    roots = sys.argv[1:] if len(sys.argv) > 1 else (glob.glob("*.zip") + ["raw_data"])
-    print(f"\nSOURCES: {roots}")
-    combined, info = load_multi_day(roots, cadence="1s")
+    args = sys.argv[1:]
+    use_cache = "--use-cache" in args
+    rebuild = "--rebuild" in args
+    roots = [a for a in args if not a.startswith("--")] or (glob.glob("*.zip") + ["raw_data"])
+    print(f"\nSOURCES: {roots}  (use_cache={use_cache and not rebuild})")
 
-    print("\n" + "=" * 70)
-    print("  MULTI-DAY INGEST")
-    print("=" * 70)
-    print(f"  accepted days : {info['days_accepted']}")
-    if info["days_rejected"]:
+    per_day, info = load_or_build_days(roots, use_cache and not rebuild)
+    days = sorted(per_day)
+    n_days = len(days)
+    print(f"\nACCEPTED DAYS ({n_days}): {days}")
+    if info.get("days_rejected"):
         for r in info["days_rejected"]:
             print(f"  REJECTED {r['date']}: {r['reason']}")
-    else:
-        print("  rejected days : none")
 
-    # ---- per-day features / catalogue / matrices ----
-    per_day_X, per_day_y = {}, {}
-    print("\n" + "=" * 70)
-    print("  PER-DAY FLARE COUNTS")
-    print("=" * 70)
-    for date, g in combined.groupby("day"):
-        feats, catalog, X, y = build_day(g)
-        per_day_X[date], per_day_y[date] = X, y
-        s = catalog_summary(catalog)
-        print(f"  {date}: {s['headline']}  | labelled-positive samples={int(y.sum())}")
-
-    days = sorted(per_day_X)
-    n_days = len(days)
-    if n_days < 2:
-        print("\n!! Only one consistent day — cannot do a held-out-DAY split.")
+    if n_days < 3:
+        print("\n!! Need >=3 consistent days for leave-one-day-out CV.")
         return
 
-    X_all = pd.concat([per_day_X[d] for d in days]).sort_index()
-    y_all = pd.concat([per_day_y[d] for d in days]).reindex(X_all.index)
+    # ---- fit Neupert constant and apply ----
+    k_neupert, n_used = fit_k_neupert(per_day)
+    featmod.K_NEUPERT = k_neupert
+    apply_k(per_day, k_neupert)
+    print(f"\nFitted K_NEUPERT = {k_neupert:.4g}  (LS-through-origin on {n_used:,} active samples)")
 
-    # ---- single-day baseline (earliest day, within-day split) ----
-    base_day = days[0]
-    base = fit_and_score(per_day_X[base_day], per_day_y[base_day],
-                         split_mode="within_day", test_frac=0.3)
+    # ---- leave-one-day-out CV ----
+    print("\n" + "=" * 72 + "\n  LEAVE-ONE-DAY-OUT CROSS-VALIDATION\n" + "=" * 72)
+    folds = []
+    pooled_cm = {"TP": 0, "FP": 0, "FN": 0, "TN": 0}
+    imp_acc = {}
+    ev_flares = ev_alerted = ev_false = 0
+    leads = []
+    for test_day in days:
+        tr_days = [d for d in days if d != test_day]
+        X_tr = pd.concat([per_day[d][1] for d in tr_days]).sort_index()
+        y_tr = pd.concat([per_day[d][2] for d in tr_days]).reindex(X_tr.index)
+        cat_te, X_te, y_te = per_day[test_day]
+        if y_te.sum() == 0 or (len(y_te) - y_te.sum()) == 0:
+            print(f"  {test_day}: skipped (single-class test day)")
+            continue
+        r = score_fold(X_tr, y_tr, X_te, y_te, cat_te)
+        folds.append((test_day, r))
+        for k in pooled_cm:
+            pooled_cm[k] += r["cm"][k]
+        for f, v in r["importances"].items():
+            imp_acc[f] = imp_acc.get(f, 0.0) + v
+        ev = r["event"]
+        ev_flares += ev["n_flares"] or 0
+        ev_alerted += ev["n_alerted"] or 0
+        ev_false += ev["false_alarm_count"] or 0
+        if ev["mean_lead"] is not None and ev["n_alerted"]:
+            leads += [ev["mean_lead"]] * ev["n_alerted"]
+        print(f"  test {test_day}: TSS={r['TSS']:+.3f} HSS={r['HSS']:+.3f} "
+              f"AUC={r['AUC']:.3f} thr={r['threshold']:.3f} "
+              f"| events {ev['n_alerted']}/{ev['n_flares']} lead~{ev['mean_lead']}")
 
-    # ---- multi-day held-out-DAY (hold out exactly the last day) ----
-    test_frac = 1.0 / n_days  # -> ceil(test_frac*n_days) == 1 held-out day
-    multi = fit_and_score(X_all, y_all, split_mode="by_day", test_frac=test_frac)
+    tss_arr = np.array([r["TSS"] for _, r in folds])
+    hss_arr = np.array([r["HSS"] for _, r in folds])
+    auc_arr = np.array([r["AUC"] for _, r in folds])
+    n_imp = max(1, len(folds))
+    imp_mean = dict(sorted(((f, v / n_imp) for f, v in imp_acc.items()),
+                           key=lambda kv: -kv[1]))
 
-    # ---- report ----
-    def block(title, r):
-        print("\n" + "-" * 70)
-        print(f"  {title}")
-        print("-" * 70)
-        print(f"  train days : {r['train_days']}  ({r['n_train']:,} samples)")
-        print(f"  test  days : {r['test_days']}  ({r['n_test']:,} samples, "
-              f"{r['pos_test']} positive)")
-        print(f"  TSS={r['TSS']:+.4f}  HSS={r['HSS']:+.4f}  AUC={r['AUC']}  "
-              f"thr={r['threshold']:.3f}")
-        print(f"  confusion  : {r['confusion']}")
-        print(f"  top-{TOP_N} importances:")
-        for k, v in list(r["importances"].items())[:TOP_N]:
-            print(f"      {k:24s} {v:.4f}")
+    print("\n" + "=" * 72 + "\n  AGGREGATE (mean +/- std over %d folds)\n" % len(folds) + "=" * 72)
+    print(f"  TSS = {tss_arr.mean():+.3f} +/- {tss_arr.std():.3f}")
+    print(f"  HSS = {hss_arr.mean():+.3f} +/- {hss_arr.std():.3f}")
+    print(f"  AUC = {auc_arr.mean():.3f} +/- {auc_arr.std():.3f}")
+    print(f"  pooled confusion : {pooled_cm}")
+    print(f"  pooled TSS = {tss(cm=pooled_cm):+.3f}   pooled HSS = {hss(cm=pooled_cm):+.3f}")
+    print(f"  EVENT-LEVEL: alerted {ev_alerted}/{ev_flares} confirmed flares "
+          f"(recall={ev_alerted / ev_flares:.2f} )" if ev_flares else "  EVENT-LEVEL: no flares")
+    print(f"  mean lead = {np.mean(leads):.1f} min  |  FAR = {ev_false / n_days:.2f}/day"
+          if leads else f"  FAR = {ev_false / n_days:.2f}/day")
+    print(f"\n  top-{TOP_N} mean feature importances:")
+    for f, v in list(imp_mean.items())[:TOP_N]:
+        print(f"      {f:24s} {v:.4f}")
 
-    print("\n" + "=" * 70)
-    print("  HELD-OUT EVALUATION")
-    print("=" * 70)
-    block(f"SINGLE-DAY baseline ({base_day}, within-day split)", base)
-    block(f"MULTI-DAY ({n_days} days, TRUE held-out-day split)", multi)
+    # ---- chronological headline split ----
+    n_test = max(1, round(0.2 * n_days))
+    tr_days, te_days = days[:-n_test], days[-n_test:]
+    X_tr = pd.concat([per_day[d][1] for d in tr_days]).sort_index()
+    y_tr = pd.concat([per_day[d][2] for d in tr_days]).reindex(X_tr.index)
+    X_te = pd.concat([per_day[d][1] for d in te_days]).sort_index()
+    y_te = pd.concat([per_day[d][2] for d in te_days]).reindex(X_te.index)
+    cat_te = pd.concat([per_day[d][0] for d in te_days if len(per_day[d][0])], ignore_index=True) \
+        if any(len(per_day[d][0]) for d in te_days) else pd.DataFrame()
+    head = score_fold(X_tr, y_tr, X_te, y_te, cat_te)
+    print("\n" + "=" * 72 + "\n  CHRONOLOGICAL HEADLINE SPLIT\n" + "=" * 72)
+    print(f"  TRAIN {tr_days[0]}..{tr_days[-1]} ({len(X_tr):,})  ->  TEST {te_days} ({len(X_te):,})")
+    print(f"  TSS={head['TSS']:+.3f}  HSS={head['HSS']:+.3f}  AUC={head['AUC']:.3f}  "
+          f"thr={head['threshold']:.3f}  cm={head['cm']}")
 
-    # ---- new-feature importance comparison ----
-    print("\n" + "=" * 70)
-    print("  NEW-FEATURE IMPORTANCE: single-day vs multi-day")
-    print("=" * 70)
-    for f in ("neupert_windowed", "neupert_residual", "hxr_sxr_lag", "hxr_sxr_xcorr"):
-        print(f"  {f:20s} single={base['importances'].get(f, 0):.4f}  "
-              f"multi={multi['importances'].get(f, 0):.4f}")
-
-    out = {"ingest": info, "single_day": base, "multi_day": multi}
-    with open("data/catalog/multiday_metrics.json", "w") as fh:
-        import os
-        os.makedirs("data/catalog", exist_ok=True)
-        json.dump(out, fh, indent=2, default=str)
-    print("\n[written] data/catalog/multiday_metrics.json")
+    out = {
+        "n_days": n_days, "days": days, "k_neupert": k_neupert,
+        "lodo": {
+            "n_folds": len(folds),
+            "TSS_mean": round(float(tss_arr.mean()), 4), "TSS_std": round(float(tss_arr.std()), 4),
+            "HSS_mean": round(float(hss_arr.mean()), 4), "HSS_std": round(float(hss_arr.std()), 4),
+            "AUC_mean": round(float(auc_arr.mean()), 4), "AUC_std": round(float(auc_arr.std()), 4),
+            "pooled_cm": pooled_cm, "pooled_TSS": round(tss(cm=pooled_cm), 4),
+            "pooled_HSS": round(hss(cm=pooled_cm), 4),
+            "event_recall": round(ev_alerted / ev_flares, 3) if ev_flares else None,
+            "n_flares": ev_flares, "n_alerted": ev_alerted,
+            "mean_lead": round(float(np.mean(leads)), 2) if leads else None,
+            "far_per_day": round(ev_false / n_days, 2),
+            "importances_mean": {k: round(v, 4) for k, v in imp_mean.items()},
+            "per_fold": {d: {"TSS": round(r["TSS"], 4), "HSS": round(r["HSS"], 4),
+                             "AUC": round(r["AUC"], 4)} for d, r in folds},
+        },
+        "headline_split": {"train_days": tr_days, "test_days": te_days,
+                           "TSS": round(head["TSS"], 4), "HSS": round(head["HSS"], 4),
+                           "AUC": round(head["AUC"], 4), "cm": head["cm"]},
+    }
+    os.makedirs("data/catalog", exist_ok=True)
+    json.dump(out, open("data/catalog/lodo_metrics.json", "w"), indent=2, default=str)
+    print("\n[written] data/catalog/lodo_metrics.json")
 
 
 if __name__ == "__main__":
