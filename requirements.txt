@@ -1,0 +1,13 @@
+# Aditya-L1 SoLEXS + HEL1OS flare forecasting — Python dependencies
+numpy>=1.24
+pandas>=2.0
+astropy>=6.0
+pyarrow>=14.0
+scipy>=1.11          # Savitzky-Golay derivative (features.py)
+xgboost>=2.0         # gradient-boosted forecaster (forecast.py)
+scikit-learn>=1.3    # probability calibration, ROC/AUC (forecast.py, evaluate.py)
+matplotlib>=3.7      # PDF report figures (report.py)
+reportlab>=4.0       # PDF report composition (report.py)
+fastapi>=0.110       # web API (api.py)
+uvicorn>=0.27        # ASGI server (api.py)
+python-multipart>=0.0.9  # file uploads (api.py)

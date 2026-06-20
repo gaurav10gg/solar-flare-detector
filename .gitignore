@@ -1,0 +1,36 @@
+# ---- Raw / large data (never commit) ----
+*.zip
+*.fits
+*.lc
+*.lc.gz
+*.gti
+*.gti.gz
+raw_data/
+data/
+*.sqlite
+*.parquet
+*.pdf
+
+# ---- NOAA/GOES ground-truth (user-supplied, optional) ----
+data/catalog/goes_flares.csv
+
+# ---- Python ----
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+env/
+.ipynb_checkpoints/
+
+# ---- Node / frontend tooling ----
+node_modules/
+_babelcheck/
+package-lock.json
+
+# ---- OS / editor ----
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+*.log
