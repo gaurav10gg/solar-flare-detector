@@ -197,6 +197,18 @@ def run_pipeline(path, *, cadence: str = "1s", horizon_min: float = 30.0,
                 key=lambda kv: -kv[1])),
         }
         metrics["goes_calibrated"] = goes_calibrated
+        # Always-on disclaimer reconciling the two-model evaluation regime so a
+        # reader never mistakes the (intentionally honest) held-out TSS for a bug
+        # when the demo alert log shows clean hits. Sourced here once and reused
+        # verbatim by the PDF report and the dashboard.
+        metrics["evaluation_note"] = (
+            "TSS, HSS, ROC-AUC and the confusion matrix above are computed on a "
+            "held-out time split the model never trained on — this is the honest, "
+            "leakage-free skill score. The alert log and event-recall/lead-time "
+            "numbers below come from a separate model fitted on the full day to "
+            "produce a smooth demo curve for the replay; they are illustrative of "
+            "alert *behavior*, not a generalization claim."
+        )
         if n_days < 2:
             metrics["data_warning"] = ("Single observation day — metrics from a "
                                        "within-day time split; add more days for "

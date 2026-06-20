@@ -580,6 +580,11 @@ function MetricsScreen({ metrics }) {
         <div className="mcard"><div className="ml">Median Lead</div><div className="mv">{lt.median ?? "—"}<span style={{ fontSize: 14 }}> min</span></div><div className="mh">{lt.in_target_15_30_pct ?? 0}% in 15–30 min</div></div>
         <div className="mcard"><div className="ml">Alerts</div><div className="mv">{lt.n_alerts ?? 0}</div><div className="mh">{lt.n_matched ?? 0} matched · {lt.n_false ?? 0} false</div></div>
       </div>
+      {metrics.evaluation_note && (
+        <p className="muted" style={{ fontFamily: "var(--mono)", fontSize: 11, margin: "4px 0 18px", lineHeight: 1.6 }}>
+          ℹ {metrics.evaluation_note}
+        </p>
+      )}
       <div className="panel-title" style={{ margin: "18px 0 10px" }}>Event-level skill (per-flare) — the operational story</div>
       <div className="metric-cards">
         <div className="mcard headline"><div className="ml">Event Recall</div><div className="mv">{ev.event_recall != null ? (ev.event_recall * 100).toFixed(0) + "%" : "—"}</div><div className="mh">alerted {ev.n_alerted ?? 0}/{ev.n_flares ?? 0} confirmed flares</div></div>

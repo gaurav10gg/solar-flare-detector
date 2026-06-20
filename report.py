@@ -354,6 +354,10 @@ def build_pdf_report(bundle: dict, out_path: str) -> str:
         ["Observation days", str(metrics.get("n_days", "-"))],
     ]
     story.append(_kv_table(skill_rows))
+    note = metrics.get("evaluation_note")
+    if note:
+        story.append(Spacer(1, 6))
+        story.append(Paragraph("Note: " + note, st["muted"]))
     story.append(Spacer(1, 8))
     figs = [f for f in (_fig_importance(metrics), _fig_confusion(metrics)) if f is not None]
     if figs:
