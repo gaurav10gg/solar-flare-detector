@@ -103,11 +103,15 @@ def load_or_build_days(roots, use_cache):
 # Neupert constant fit
 # --------------------------------------------------------------------------- #
 def fit_k_neupert(per_day):
-    """Least-squares-through-origin K for dF_SXR/dt ~= K * F_HXR on active samples."""
+    """Least-squares-through-origin K for dF_SXR/dt ~= K * F_HXR on active samples.
+
+    Uses the CAUSAL soft-rise rate (``deriv_soft_c``) to match the causal
+    ``neupert_residual_c`` feature the forecaster actually consumes.
+    """
     hs, ds = [], []
     for _, X, _ in per_day.values():
-        if {"hxr_broad", "deriv_soft"} <= set(X.columns):
-            h = X["hxr_broad"].to_numpy(); d = X["deriv_soft"].to_numpy()
+        if {"hxr_broad", "deriv_soft_c"} <= set(X.columns):
+            h = X["hxr_broad"].to_numpy(); d = X["deriv_soft_c"].to_numpy()
             m = np.isfinite(h) & np.isfinite(d) & (h > 0)
             hs.append(h[m]); ds.append(d[m])
     h = np.concatenate(hs); d = np.concatenate(ds)
@@ -116,10 +120,10 @@ def fit_k_neupert(per_day):
 
 
 def apply_k(per_day, k):
-    """Recompute neupert_residual = deriv_soft - k*hxr_broad in each day's X."""
+    """Recompute neupert_residual_c = deriv_soft_c - k*hxr_broad in each day's X."""
     for _, X, _ in per_day.values():
-        if {"hxr_broad", "deriv_soft", "neupert_residual"} <= set(X.columns):
-            X["neupert_residual"] = X["deriv_soft"] - k * X["hxr_broad"]
+        if {"hxr_broad", "deriv_soft_c", "neupert_residual_c"} <= set(X.columns):
+            X["neupert_residual_c"] = X["deriv_soft_c"] - k * X["hxr_broad"]
 
 
 # --------------------------------------------------------------------------- #

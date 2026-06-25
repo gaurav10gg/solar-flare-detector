@@ -38,13 +38,13 @@ def load_cache():
 def fit_k(per):
     hs, ds = [], []
     for _, X, _ in per.values():
-        h, d = X["hxr_broad"].to_numpy(), X["deriv_soft"].to_numpy()
+        h, d = X["hxr_broad"].to_numpy(), X["deriv_soft_c"].to_numpy()
         m = np.isfinite(h) & np.isfinite(d) & (h > 0)
         hs.append(h[m]); ds.append(d[m])
     h, d = np.concatenate(hs), np.concatenate(ds)
     k = float(np.sum(h * d) / np.sum(h * h))
     for _, X, _ in per.values():
-        X["neupert_residual"] = X["deriv_soft"] - k * X["hxr_broad"]
+        X["neupert_residual_c"] = X["deriv_soft_c"] - k * X["hxr_broad"]
     return k
 
 
@@ -86,8 +86,8 @@ def main():
 
     # ---------- 2. single-feature baselines vs model ----------
     print("\n" + "=" * 74 + "\n  BASELINE: best single-feature TSS (pooled, in-sample upper bound)\n" + "=" * 74)
-    base_feats = ["deriv_soft", "var_soft", "neupert_residual", "neupert_windowed",
-                  "hxr_sxr_lag", "hxr_broad", "hr_slope"]
+    base_feats = ["deriv_soft_c", "var_soft_c", "neupert_residual_c", "neupert_windowed",
+                  "hxr_sxr_lag", "hxr_broad", "hr_slope_c"]
     sf = {c: best_single_feature_tss(X_all, y_all, c) for c in base_feats}
     for c, t in sorted(sf.items(), key=lambda kv: -(kv[1] if kv[1] == kv[1] else -9)):
         print(f"  {c:24s} best-threshold TSS = {t:+.3f}")

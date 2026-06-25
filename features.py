@@ -51,8 +51,10 @@ _MAD_TO_SIGMA = 1.4826  # MAD -> Gaussian-equivalent sigma
 # ~1.7M active samples across 23 observation days (LS-through-origin); it puts
 # `predicted_sxr_rise` on the same count-rate scale as `deriv_soft` so the
 # residual's zero-crossing genuinely flags HXR/SXR divergence rather than being
-# dominated by the raw unit mismatch.
-K_NEUPERT = 1.13e-3  # (cts/s of SXR-rate) per (ct/s of HXR-flux); fit on 23 days
+# dominated by the raw unit mismatch.  The fit regresses the *causal* soft-rise
+# rate (deriv_soft_c) on hxr_broad, matching the causal neupert_residual_c that
+# the real-time forecaster actually consumes.
+K_NEUPERT = 9.35e-4  # (cts/s of SXR-rate) per (ct/s of HXR-flux); LS fit, 23 days (causal)
 
 
 # --------------------------------------------------------------------------- #
@@ -179,42 +181,66 @@ def hardness_ratio(df: pd.DataFrame, eps: float = 1.0) -> pd.Series:
 
 
 # --------------------------------------------------------------------------- #
-# 4. hr_slope
+# 4. rolling OLS slope (shared by hr_slope and the causal derivatives)
 # --------------------------------------------------------------------------- #
-def hr_slope(hr: pd.Series, window: str = "5min") -> pd.Series:
+def rolling_ols_slope(y: pd.Series, window: str = "5min", *, center: bool = True,
+                      min_count: int = 5, min_frac: float = 1.0 / 6.0) -> pd.Series:
+    """Closed-form rolling least-squares slope (units: y per second).
+
+    Computed from NaN-aware rolling sums so it is fast and gap-aware. Setting
+    ``center=False`` makes the window **trailing** — i.e. the slope at time *t*
+    uses only samples up to *t* (no look-ahead). This is the causal form used to
+    feed the real-time forecaster; ``center=True`` is the retrospective form used
+    for detection/display.
+
+    Parameters
+    ----------
+    y : pd.Series
+        Value series on a (near-)uniform UTC grid.
+    window : str
+        Slope estimation window.
+    center : bool, default True
+        Centred (retrospective) when True; trailing (causal) when False.
+    min_count, min_frac : int, float
+        A window needs at least ``max(min_count, min_frac*w)`` valid samples.
+    """
+    cadence_s = infer_cadence_seconds(y.index)
+    w = _window_samples(window, cadence_s)
+    mp = max(min_count, int(w * min_frac))
+
+    # Seconds since the series start. Using a local origin (not absolute Unix
+    # epoch ~1.8e9) avoids catastrophic cancellation in the OLS denominator.
+    t0 = y.index[0]
+    t = pd.Series((y.index - t0).total_seconds(), index=y.index)
+    yy = y.astype("float64")
+    mask = yy.notna()
+    tv = t.where(mask)  # time only where y is valid (NaN-aware sums)
+
+    roll = lambda s: s.rolling(w, center=center, min_periods=mp)
+    n = roll(mask.astype("float64")).sum()
+    sum_t = roll(tv).sum()
+    sum_y = roll(yy).sum()
+    sum_tt = roll(tv * tv).sum()
+    sum_ty = roll(tv * yy).sum()
+
+    denom = n * sum_tt - sum_t * sum_t
+    return (n * sum_ty - sum_t * sum_y) / denom.where(denom.abs() > 1e-12)
+
+
+def hr_slope(hr: pd.Series, window: str = "5min", *, center: bool = True) -> pd.Series:
     """Rolling least-squares slope of the hardness ratio (the precursor signal).
 
-    Closed-form OLS slope (units: HR per second) over a sliding *window*,
-    computed from NaN-aware rolling sums so it is both fast and gap-safe. A
-    sustained positive slope is an early hardening warning.
+    A sustained positive slope is an early hardening warning. ``center=True``
+    (default) is the retrospective form; pass ``center=False`` for the causal,
+    real-time-deployable form used by the forecaster. See
+    :func:`rolling_ols_slope`.
 
     Returns
     -------
     pd.Series
         dHR/dt named ``hr_slope``.
     """
-    cadence_s = infer_cadence_seconds(hr.index)
-    w = _window_samples(window, cadence_s)
-    mp = max(5, w // 6)
-
-    # Seconds since the series start. Using a local origin (not absolute Unix
-    # epoch ~1.8e9) avoids catastrophic cancellation in the OLS denominator.
-    t0 = hr.index[0]
-    t = pd.Series((hr.index - t0).total_seconds(), index=hr.index)
-    y = hr.astype("float64")
-    mask = y.notna()
-    tv = t.where(mask)  # time only where y is valid (NaN-aware sums)
-
-    roll = lambda s: s.rolling(w, center=True, min_periods=mp)
-    n = roll(mask.astype("float64")).sum()
-    sum_t = roll(tv).sum()
-    sum_y = roll(y).sum()
-    sum_tt = roll(tv * tv).sum()
-    sum_ty = roll(tv * y).sum()
-
-    denom = n * sum_tt - sum_t * sum_t
-    slope = (n * sum_ty - sum_t * sum_y) / denom.where(denom.abs() > 1e-12)
-    return slope.rename("hr_slope")
+    return rolling_ols_slope(hr, window, center=center).rename("hr_slope")
 
 
 # --------------------------------------------------------------------------- #
@@ -518,6 +544,15 @@ def build_features(
         hxr_sxr_lag, hxr_sxr_xcorr                          (measured HXR->SXR lead)
         time_since_last_flare                               (placeholder; filled
                                                              by nowcast)
+        deriv_soft_c, deriv_hard_c, hr_slope_c,             (CAUSAL trailing twins
+        var_soft_c, var_hard_c, neupert_residual_c           — these feed the
+                                                             real-time forecaster)
+
+    Causal vs centred: detection/cataloguing use the centred (retrospective)
+    windows; the forecaster's ``make_feature_matrix`` uses only the trailing
+    ``*_c`` columns plus the already-causal features (neupert_windowed,
+    hxr_sxr_lag/xcorr, hr, hxr_broad), so the reported skill is what a live,
+    no-look-ahead system would actually achieve.
 
     The detection backgrounds use a quiescent-floor percentile over
     *quiescent_window* with a Poisson-floored sigma, which is robust to both
@@ -546,19 +581,34 @@ def build_features(
     out["hr_slope"] = hr_slope(out["hr"], window=hr_slope_window)
     _hr_liveness_report(out["hr"], out["hr_slope"])
 
+    # ---- causal (trailing, no-peek) variants for the REAL-TIME FORECASTER ----
+    # The centred columns above (deriv_*, var_*, hr_slope, centred background)
+    # peek ~half a window into the future, which is fine for *retrospective*
+    # detection / cataloguing but invalid for a forecaster that must run live and
+    # claims no-peek labels. We therefore build trailing twins used exclusively by
+    # make_feature_matrix; detection keeps the centred ones.
+    out["deriv_soft_c"] = rolling_ols_slope(soft, deriv_window, center=False)
+    out["deriv_hard_c"] = rolling_ols_slope(hard, deriv_window, center=False)
+    out["hr_slope_c"] = rolling_ols_slope(out["hr"], hr_slope_window, center=False)
+
     # Local (windowed) Neupert proxy + the direct dF_SXR/dt ~ k*F_HXR relation.
+    # neupert_windowed is already trailing/causal; hxr_broad is the raw input.
     out["neupert_windowed"] = neupert_windowed(out, window=neupert_window)
     out["predicted_sxr_rise"] = K_NEUPERT * out["hxr_broad"]
-    out["neupert_residual"] = out["deriv_soft"] - out["predicted_sxr_rise"]
+    out["neupert_residual"] = out["deriv_soft"] - out["predicted_sxr_rise"]      # centred (inspection)
+    out["neupert_residual_c"] = out["deriv_soft_c"] - out["predicted_sxr_rise"]  # causal (forecaster)
 
-    # Measured HXR->SXR lead lag (tightening lag = imminent flare).
+    # Measured HXR->SXR lead lag (tightening lag = imminent flare). Correlated
+    # against the CAUSAL soft-rise rate so the precursor is fully no-peek.
     out["hxr_sxr_lag"], out["hxr_sxr_xcorr"] = hxr_sxr_lag(
-        out, window=xcorr_window, max_lag=xcorr_max_lag)
+        out, window=xcorr_window, max_lag=xcorr_max_lag, sxr_rate_col="deriv_soft_c")
 
     w_var = _window_samples(var_window, cadence_s)
     mp = max(2, w_var // 4)
     out["var_soft"] = soft.rolling(w_var, center=True, min_periods=mp).var()
     out["var_hard"] = hard.rolling(w_var, center=True, min_periods=mp).var()
+    out["var_soft_c"] = soft.rolling(w_var, center=False, min_periods=mp).var()
+    out["var_hard_c"] = hard.rolling(w_var, center=False, min_periods=mp).var()
 
     # Filled by the nowcast layer once flares are catalogued.
     out["time_since_last_flare"] = np.nan

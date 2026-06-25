@@ -14,14 +14,17 @@ const GOES_BANDS = [
 ];
 const wm2ToCounts = (f) => f / COUNTS_TO_WM2;
 
-const PLOT_BG = "#0e1622";
-const FONT = { family: "JetBrains Mono, monospace", color: "#8ea0b8", size: 11 };
+const PLOT_BG = "#100c09";
+const FONT = { family: "JetBrains Mono, monospace", color: "#bb9d78", size: 11 };
+// solar energy ramp: soft (gold) -> hard (ember) -> hardest (red)
+const C_SOFT = "#ffc24b", C_HARD = "#ff7a18", C_HARDEST = "#ff3b30",
+      C_BG = "#7a6552", C_ACCENT = "#ff9d3c", C_AXIS = "#8a7256", C_GRID = "#241811";
 const darkLayout = (over = {}) => ({
   paper_bgcolor: "rgba(0,0,0,0)", plot_bgcolor: PLOT_BG, font: FONT,
   margin: { l: 56, r: 18, t: 14, b: 36 }, showlegend: true,
   legend: { orientation: "h", x: 0, y: 1.12, font: { size: 10 } },
-  xaxis: { gridcolor: "#1d2939", zerolinecolor: "#1d2939", color: "#6b7c93" },
-  yaxis: { gridcolor: "#1d2939", zerolinecolor: "#1d2939", color: "#6b7c93" },
+  xaxis: { gridcolor: C_GRID, zerolinecolor: C_GRID, color: C_AXIS },
+  yaxis: { gridcolor: C_GRID, zerolinecolor: C_GRID, color: C_AXIS },
   ...over,
 });
 const PLOT_CFG = { displayModeBar: false, responsive: true };
@@ -186,26 +189,26 @@ function SimulationScreen({ sim, job }) {
     const shapes = [];
     firedAlerts.forEach((a) => shapes.push({
       type: "line", x0: a.sim_time, x1: a.sim_time, yref: "paper", y0: 0, y1: 1,
-      line: { color: "rgba(255,182,39,0.55)", width: 1, dash: "dot" },
+      line: { color: "rgba(255,122,24,0.6)", width: 1, dash: "dot" },
     }));
     firedMarkers.forEach((m) => {
-      const col = m.provenance === "both" ? "#3ddc84"
-        : m.provenance === "hard_only" ? "#9d7bff" : "#36d1dc";
+      const col = m.provenance === "both" ? "#34d07f"
+        : m.provenance === "hard_only" ? C_HARDEST : C_SOFT;
       shapes.push({ type: "line", x0: m.sim_time, x1: m.sim_time, yref: "paper",
         y0: 0, y1: 1, line: { color: col, width: 1.5 } });
     });
 
     const traces = [
-      { x, y: soft, name: "SoLEXS (soft)", mode: "lines", line: { color: "#36d1dc", width: 1.6 }, yaxis: "y" },
-      { x, y: bg, name: "background", mode: "lines", line: { color: "#3a4d66", width: 1, dash: "dot" }, yaxis: "y" },
-      { x, y: hard, name: "HEL1OS (hard)", mode: "lines", line: { color: "#9d7bff", width: 1.2 }, yaxis: "y2" },
+      { x, y: soft, name: "SoLEXS (soft)", mode: "lines", line: { color: C_SOFT, width: 1.6 }, yaxis: "y" },
+      { x, y: bg, name: "background", mode: "lines", line: { color: C_BG, width: 1, dash: "dot" }, yaxis: "y" },
+      { x, y: hard, name: "HEL1OS (hard)", mode: "lines", line: { color: C_HARD, width: 1.2 }, yaxis: "y2" },
     ];
     const layout = darkLayout({
       margin: { l: 56, r: 56, t: 26, b: 34 },
-      xaxis: { gridcolor: "#1d2939", color: "#6b7c93",
+      xaxis: { gridcolor: C_GRID, color: C_AXIS,
         range: [sim.t_start, sim.t_end], type: "date" },
-      yaxis: { title: "SoLEXS cts/s", gridcolor: "#1d2939", color: "#36d1dc", rangemode: "tozero" },
-      yaxis2: { title: "HEL1OS cts/s", overlaying: "y", side: "right", color: "#9d7bff", showgrid: false, rangemode: "tozero" },
+      yaxis: { title: "SoLEXS cts/s", gridcolor: C_GRID, color: C_SOFT, rangemode: "tozero" },
+      yaxis2: { title: "HEL1OS cts/s", overlaying: "y", side: "right", color: C_HARD, showgrid: false, rangemode: "tozero" },
       shapes,
     });
     Plotly.react(chartRef.current, traces, layout, PLOT_CFG);
@@ -280,7 +283,7 @@ function SimulationScreen({ sim, job }) {
   if (!sim) return <div className="empty">No simulation loaded.</div>;
   const speedFactor = Math.round(daySec / wallTarget);
   const probPct = prob != null ? (prob * 100).toFixed(0) : "—";
-  const probColor = prob == null ? "#6b7c93" : prob > 0.5 ? "#ff5c5c" : prob > 0.3 ? "#ffb627" : "#3ddc84";
+  const probColor = prob == null ? "#8a7256" : prob > 0.5 ? "#ff4d3d" : prob > 0.3 ? "#ffb000" : "#34d07f";
 
   return (
     <div className="sim-layout">
@@ -302,7 +305,7 @@ function SimulationScreen({ sim, job }) {
           <button className="ctrl-btn" onClick={restart}>↺</button>
           <input className="scrub" type="range" min="0" max="1" step="0.001"
             value={progress} onChange={(e) => scrub(parseFloat(e.target.value))} />
-          <span style={{ fontFamily: "var(--mono)", fontSize: 11, color: "#6b7c93", minWidth: 40 }}>
+          <span style={{ fontFamily: "var(--mono)", fontSize: 11, color: "#8a7256", minWidth: 40 }}>
             {(progress * 100).toFixed(0)}%</span>
           <div className="speed-sel">
             {[120, 60, 30].map((w) => (
@@ -319,7 +322,7 @@ function SimulationScreen({ sim, job }) {
       <div className="sim-side">
         <div className="panel" style={{ flexShrink: 0 }}>
           <h3 className="panel-title">Live Event Log</h3>
-          <div style={{ fontFamily: "var(--mono)", fontSize: 11, color: "#6b7c93" }}>
+          <div style={{ fontFamily: "var(--mono)", fontSize: 11, color: "#8a7256" }}>
             {events.length} events · {sim.nowcast_markers.length} flares · {sim.forecast_alerts.length} alerts
           </div>
         </div>
@@ -378,19 +381,19 @@ function LightCurveScreen({ lc }) {
     const annos = GOES_BANDS.map((b) => ({
       xref: "paper", x: 0.995, xanchor: "right", yref: "y",
       y: Math.sqrt(wm2ToCounts(b.lo) * wm2ToCounts(b.hi)),
-      text: b.cls, showarrow: false, font: { size: 13, color: "#6b7c93", family: "var(--mono)" },
+      text: b.cls, showarrow: false, font: { size: 13, color: "#8a7256", family: "var(--mono)" },
     }));
     const traces = [
-      { x, y: lc.solexs_counts, name: "SoLEXS soft X-ray", mode: "lines", line: { color: "#36d1dc", width: 1.4 }, yaxis: "y" },
-      { x, y: lc.hxr_broad, name: "HEL1OS 18–160 keV", mode: "lines", line: { color: "#9d7bff", width: 1.2 }, yaxis: "y2" },
-      { x, y: lc.hxr_80_150, name: "HEL1OS 80–150 keV", mode: "lines", line: { color: "#ff5c5c", width: 0.9 }, yaxis: "y2" },
+      { x, y: lc.solexs_counts, name: "SoLEXS soft X-ray", mode: "lines", line: { color: C_SOFT, width: 1.4 }, yaxis: "y" },
+      { x, y: lc.hxr_broad, name: "HEL1OS 18–160 keV", mode: "lines", line: { color: C_HARD, width: 1.2 }, yaxis: "y2" },
+      { x, y: lc.hxr_80_150, name: "HEL1OS 80–150 keV", mode: "lines", line: { color: C_HARDEST, width: 0.9 }, yaxis: "y2" },
     ];
     const layout = darkLayout({
       height: 560,
       margin: { l: 64, r: 64, t: 30, b: 40 },
-      xaxis: { gridcolor: "#1d2939", color: "#6b7c93", type: "date" },
-      yaxis: { title: "SoLEXS cts/s (log)", type: "log", gridcolor: "#1d2939", color: "#36d1dc", shapes: bands },
-      yaxis2: { title: "HEL1OS cts/s (log)", type: "log", overlaying: "y", side: "right", color: "#9d7bff", showgrid: false },
+      xaxis: { gridcolor: C_GRID, color: C_AXIS, type: "date" },
+      yaxis: { title: "SoLEXS cts/s (log)", type: "log", gridcolor: C_GRID, color: C_SOFT, shapes: bands },
+      yaxis2: { title: "HEL1OS cts/s (log)", type: "log", overlaying: "y", side: "right", color: C_HARD, showgrid: false },
       shapes: bands, annotations: annos,
     });
     Plotly.react(ref.current, traces, layout, PLOT_CFG);
@@ -437,7 +440,7 @@ function AlertsScreen({ sim, importances }) {
                     const w = ((c.importance || 0) / maxImp) * 100;
                     return (
                       <div key={j} style={{ marginBottom: 4 }}>
-                        <div style={{ display: "flex", justifyContent: "space-between", fontFamily: "var(--mono)", fontSize: 10, color: "#8ea0b8" }}>
+                        <div style={{ display: "flex", justifyContent: "space-between", fontFamily: "var(--mono)", fontSize: 10, color: "#bb9d78" }}>
                           <span>{c.feature}</span><span>{c.value}</span>
                         </div>
                         <div className="bar-track" style={{ height: 7 }}>
@@ -539,13 +542,13 @@ function MetricsScreen({ metrics }) {
     const roc = metrics.ROC;
     Plotly.react(rocRef.current, [
       { x: roc.fpr, y: roc.tpr, mode: "lines", fill: "tozeroy", name: "ROC",
-        line: { color: "#36d1dc", width: 2 }, fillcolor: "rgba(54,209,220,0.08)" },
-      { x: [0, 1], y: [0, 1], mode: "lines", name: "chance", line: { color: "#3a4d66", width: 1, dash: "dash" } },
+        line: { color: C_HARD, width: 2 }, fillcolor: "rgba(255,122,24,0.10)" },
+      { x: [0, 1], y: [0, 1], mode: "lines", name: "chance", line: { color: C_BG, width: 1, dash: "dash" } },
     ], darkLayout({
       height: 300, showlegend: false,
-      xaxis: { title: "False Positive Rate", gridcolor: "#1d2939", color: "#6b7c93", range: [0, 1] },
-      yaxis: { title: "True Positive Rate", gridcolor: "#1d2939", color: "#6b7c93", range: [0, 1] },
-      annotations: [{ x: 0.6, y: 0.2, text: `AUC = ${roc.auc ?? "n/a"}`, showarrow: false, font: { color: "#36d1dc", size: 16, family: "var(--mono)" } }],
+      xaxis: { title: "False Positive Rate", gridcolor: C_GRID, color: C_AXIS, range: [0, 1] },
+      yaxis: { title: "True Positive Rate", gridcolor: C_GRID, color: C_AXIS, range: [0, 1] },
+      annotations: [{ x: 0.6, y: 0.2, text: `AUC = ${roc.auc ?? "n/a"}`, showarrow: false, font: { color: C_ACCENT, size: 16, family: "var(--mono)" } }],
     }), PLOT_CFG);
   }, [metrics]);
 
@@ -554,11 +557,11 @@ function MetricsScreen({ metrics }) {
     const h = metrics.lead_time.histogram;
     Plotly.react(ltRef.current, [
       { x: Object.keys(h), y: Object.values(h), type: "bar",
-        marker: { color: "#3ddc84" } },
+        marker: { color: C_ACCENT } },
     ], darkLayout({
       height: 300, showlegend: false,
-      xaxis: { title: "lead time", gridcolor: "#1d2939", color: "#6b7c93" },
-      yaxis: { title: "alerts", gridcolor: "#1d2939", color: "#6b7c93" },
+      xaxis: { title: "lead time", gridcolor: C_GRID, color: C_AXIS },
+      yaxis: { title: "alerts", gridcolor: C_GRID, color: C_AXIS },
     }), PLOT_CFG);
   }, [metrics]);
 
@@ -623,9 +626,9 @@ function MetricsScreen({ metrics }) {
           <h3 className="panel-title">Confusion (held-out test)</h3>
           {metrics.confusion && (
             <div style={{ fontFamily: "var(--mono)" }}>
-              <div className="kv"><span className="k">True Positives</span><span style={{ color: "#3ddc84" }}>{metrics.confusion.TP}</span></div>
-              <div className="kv"><span className="k">False Positives</span><span style={{ color: "#ffb627" }}>{metrics.confusion.FP}</span></div>
-              <div className="kv"><span className="k">False Negatives</span><span style={{ color: "#ff5c5c" }}>{metrics.confusion.FN}</span></div>
+              <div className="kv"><span className="k">True Positives</span><span style={{ color: "#34d07f" }}>{metrics.confusion.TP}</span></div>
+              <div className="kv"><span className="k">False Positives</span><span style={{ color: "#ffb000" }}>{metrics.confusion.FP}</span></div>
+              <div className="kv"><span className="k">False Negatives</span><span style={{ color: "#ff4d3d" }}>{metrics.confusion.FN}</span></div>
               <div className="kv"><span className="k">True Negatives</span><span>{metrics.confusion.TN}</span></div>
               <div className="kv"><span className="k">Operating threshold</span><span>{metrics.threshold}</span></div>
               {metrics.peak_tss != null && <div className="kv"><span className="k">Peak TSS (max-TSS thr {metrics.tss_threshold})</span><span>{metrics.peak_tss}</span></div>}

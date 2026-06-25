@@ -65,25 +65,30 @@ _INTENSITY = {0: "none", 1: "low", 2: "low", 3: "med", 4: "high"}  # A/B/C->low,
 _CLASS_ORDER = ["none", "low", "med", "high"]
 
 # The engineered features, with one-line rationale each.
+# NOTE: every windowed forecasting feature here is CAUSAL (trailing, no
+# look-ahead) so the model can run live and the reported skill is honest. The
+# centred twins (deriv_soft, var_soft, hr_slope, deriv_hard, neupert_residual)
+# peek ~half a window into the future and are reserved for retrospective
+# detection/cataloguing only — they are deliberately NOT used here.
 FEATURE_COLUMNS = [
-    "hr",                     # hardness ratio (60-150)/(20-40 keV): spectral hardening precursor
-    "hr_slope",               # dHR/dt: rising hardness fires before broadband threshold
-    "hxr_broad",              # HEL1OS 18-160 keV flux: non-thermal energy release proxy
-    "deriv_hard",             # d(HXR)/dt: impulsive onset rate
+    "hr",                     # hardness ratio (60-150)/(20-40 keV): instantaneous, causal
+    "hr_slope_c",             # trailing dHR/dt: rising hardness fires before broadband threshold
+    "hxr_broad",              # HEL1OS 18-160 keV flux (raw input): non-thermal energy proxy
+    "deriv_hard_c",           # trailing d(HXR)/dt: impulsive onset rate
     "neupert_windowed",       # trailing windowed HXR fluence (local Neupert): predicts SXR rise
-    "neupert_residual",       # deriv_soft - k*hxr_broad: divergence => imminent SXR peak
-    "hxr_sxr_lag",            # measured HXR->SXR lead lag (tightening lag = imminent flare)
+    "neupert_residual_c",     # deriv_soft_c - k*hxr_broad: divergence => imminent SXR peak
+    "hxr_sxr_lag",            # measured HXR->SXR lead lag (trailing windows; tightening = imminent)
     "hxr_sxr_xcorr",          # peak HXR->SXR cross-correlation (coupling strength)
-    "deriv_soft",             # d(SoLEXS)/dt: thermal rise rate
-    "var_soft",               # short-term SoLEXS variance: pre-flare variability
+    "deriv_soft_c",           # trailing d(SoLEXS)/dt: thermal rise rate
+    "var_soft_c",             # trailing short-term SoLEXS variance: pre-flare variability
     "time_since_last_flare",  # recency of last detected flare (sympathetic/quiet-Sun context)
 ]
 
 # Features that carry a meaningful "zero" when undefined (no hard emission /
 # quiescence) and are filled rather than dropped. The windowed-Neupert,
 # residual and cross-correlation features are 0/"no-coupling" in quiescence.
-_FILL_ZERO = ["hr", "hr_slope", "var_soft", "deriv_hard", "deriv_soft",
-              "neupert_windowed", "neupert_residual", "hxr_sxr_lag", "hxr_sxr_xcorr"]
+_FILL_ZERO = ["hr", "hr_slope_c", "var_soft_c", "deriv_hard_c", "deriv_soft_c",
+              "neupert_windowed", "neupert_residual_c", "hxr_sxr_lag", "hxr_sxr_xcorr"]
 # Cap (seconds) for "time since last flare" when none has occurred yet.
 _TSLF_CAP = 24 * 3600.0
 
